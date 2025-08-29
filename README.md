@@ -2,6 +2,8 @@
 
 A WebAssembly port of [abcmidi](https://github.com/sshlien/abcmidi)'s `midi2abc`, allowing MIDI-to-ABC conversion in the browser.
 
+[Check the Demo here](https://reinissance.github.io/midi2abcWASM/)
+
 ## Features
 
 - Upload MIDI files and convert to ABC notation in-browser
