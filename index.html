@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>midi2abc WASM Demo</title>
+</head>
+<body>
+  <h1>midi2abc WebAssembly Demo</h1>
+  <input type="file" id="midiInput" accept=".mid,.midi" onchange="uploadMidiFile(this)" />
+  <button onclick="renderAbcScore()" id="scoreBtn" disabled>Render ABC Score</button>
+  <button onclick="toggleRenderMode()" id="toggleRenderBtn" disabled>Switch to YAPS</button>
+  <textarea id="output" style="width:100%;height:10em;"></textarea>
+  <div id="score" style="background:#f8f8f8; border:1px solid #ccc; padding:1em; margin-top:1em;"></div>
+  <script>
+    // Dynamically load midi2abc.js with cache busting
+    var script = document.createElement('script');
+    script.src = 'midi2abc.js?v=' + Date.now();
+    document.head.appendChild(script);
+  </script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/abcjs/6.5.1/abcjs-basic-min.min.js" integrity="sha512-g2wj9XoJ7DsQgUBGWlAXhRlCV2eOUB7VV5XUsrLKf0I0hvDvOBGOLIP1XBOiXdE6Gp6MUoMkr/mbdwz4C/kwDw==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script>
+    let midi2abc = null;
+    let abcOutput = "";
+    let midi2abcReady = false;
+    let renderWithYaps = false;
+    let yaps = null;
+    let yapsReady = false;
+    let yapsOutput = []; // Collect YAPS output for UI
+
+    // Dynamically load yaps.js
+    var yapsScript = document.createElement('script');
+    yapsScript.src = 'yaps.js?v=' + Date.now();
+    document.head.appendChild(yapsScript);
+
+    yapsScript.onload = function() {
+      if (typeof yapsModule === 'function') {
+        yapsModule({
+          print: function(text) {
+            yapsOutput.push(text);
+            console.log('[YAPS WASM]', text);
+          },
+          onRuntimeInitialized: function() {
+            yapsReady = true;
+            document.getElementById('toggleRenderBtn').disabled = false;
+          }
+        }).then(function(Module) {
+          yaps = Module;
+        });
+      }
+    };
+
+    function toggleRenderMode() {
+      renderWithYaps = !renderWithYaps;
+      document.getElementById('toggleRenderBtn').textContent = renderWithYaps ? 'Switch to ABCJS' : 'Switch to YAPS';
+      renderAbcScore();
+    }
+
+    function renderAbcScore() {
+      const abc = document.getElementById('output').value;
+      const scoreDiv = document.getElementById('score');
+      if (!abc.trim()) {
+        scoreDiv.innerHTML = '<em>No ABC data to render.</em>';
+        return;
+      }
+      if (renderWithYaps) {
+        if (!yapsReady || !yaps) {
+          scoreDiv.innerHTML = '<em>YAPS module not loaded.</em>';
+          return;
+        }
+        try {
+          yapsOutput = []; // Reset output for this run
+          // Clean up previous files if they exist
+          try { yaps.FS.unlink('/input.abc'); } catch (e) {}
+          try { yaps.FS.unlink('/output.ps'); } catch (e) {}
+          // Write abc to yaps FS and call main
+          yaps.FS.writeFile('/input.abc', abc);
+          // Defensive: check file exists and is non-empty
+          const stat = yaps.FS.stat('/input.abc');
+          if (!stat || stat.size === 0) {
+            scoreDiv.innerHTML = '<em>Failed to write ABC file for YAPS.</em>';
+            return;
+          }
+          // Defensive: callMain may throw if input is malformed
+          try {
+            yaps.callMain(['input.abc', '-o', 'output.ps']);
+          } catch (err) {
+            // Show first 10 lines of ABC for debugging
+            const abcPreview = abc.split('\n').slice(0, 10).join('\n');
+            const yapsMsg = yapsOutput.length
+              ? `<details style="margin-top:0.5em;"><summary>YAPS output</summary><pre style="background:#f4f4f4;border:1px solid #ccc;padding:0.5em;">${yapsOutput.join('\n')}</pre></details>`
+              : '';
+            scoreDiv.innerHTML = `<em style="color:red;">YAPS failed to process ABC (possibly invalid ABC or internal error).</em><br>
+            <p>Try rendering only one voice at a time...</p>
+<pre style="background:#f4f4f4;border:1px solid #ccc;padding:0.5em;">${abcPreview}</pre>
+${yapsMsg}`;
+            console.error(err);
+            return;
+          }
+          // Defensive: check output file exists
+          let psData;
+          try {
+            psData = yaps.FS.readFile('/output.ps', { encoding: 'utf8' });
+          } catch (err) {
+            const yapsMsg = yapsOutput.length
+              ? `<details style="margin-top:0.5em;"><summary>YAPS output</summary><pre style="background:#f4f4f4;border:1px solid #ccc;padding:0.5em;">${yapsOutput.join('\n')}</pre></details>`
+              : '';
+            scoreDiv.innerHTML = '<em>YAPS did not produce output. (Check ABC input validity.)</em>' + yapsMsg;
+            console.error(err);
+            return;
+          }
+          // Offer as download
+          const blob = new Blob([psData], { type: 'application/postscript' });
+          const url = URL.createObjectURL(blob);
+          // Show as text preview and download link
+          scoreDiv.innerHTML = `
+<a href="${url}" download="output.ps" style="display:inline-block;margin-bottom:0.5em;">Download PostScript (YAPS output)</a>
+<details style="margin-top:1em;">
+  <summary>Show PostScript source</summary>
+  <pre style="max-height:20em;overflow:auto;background:#f4f4f4;border:1px solid #ccc;padding:0.5em;">${psData.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</pre>
+</details>
+<!--
+  To render PostScript visually, consider integrating Ghostscript compiled to WASM:
+  https://github.com/GoldenCheetah/ghostscript-wasm
+  This requires additional setup and is not included here.
+-->
+`;
+        } catch (err) {
+          scoreDiv.innerHTML = '<em>Error rendering with YAPS.</em>';
+          console.error(err);
+        }
+      } else {
+        if (typeof ABCJS !== 'undefined' && ABCJS.renderAbc) {
+          ABCJS.renderAbc('score', abc);
+        } else {
+          scoreDiv.innerHTML = '<em>ABCJS not loaded.</em>';
+        }
+      }
+    }
+
+    // Wait for midi2abc.js to load before instantiating the module
+    window.addEventListener('load', function() {
+      if (typeof midi2abcModule !== 'function') {
+        // Wait for script to load
+        script.onload = instantiateM2A;
+      } else {
+        instantiateM2A();
+      }
+    });
+
+    function instantiateM2A() {
+      midi2abcModule({
+        print: function(text) {
+          abcOutput += text + "\n";
+          console.log('[midi2abc WASM]', text);
+        },
+        onRuntimeInitialized: function() {
+          midi2abcReady = true;
+        }
+      }).then(function(Module) {
+        midi2abc = Module;
+        // Try to load demo file if present
+        fetch('./bach_846.mid')
+          .then(response => {
+            if (!response.ok) throw new Error('File not found');
+            return response.arrayBuffer();
+          })
+          .then(buffer => {
+            const data = new Uint8Array(buffer);
+            midi2abc.FS.writeFile('/input.mid', data);
+            abcOutput = "";
+            midi2abc.callMain(['input.mid']);
+            abcOutput = abcOutput.replace(/^[\s\S]*?(?=^X:)/m, '');
+            document.getElementById('output').value = abcOutput;
+            document.getElementById('scoreBtn').disabled = false;
+            renderAbcScore();
+          })
+          .catch(err => {
+            document.getElementById('output').textContent = 'Error loading bach_846.mid: ' + err;
+          });
+      });
+    }
+
+    function uploadMidiFile(target) {
+      const output = document.getElementById('output');
+      if (!target.files || !target.files.length) {
+        output.textContent = 'Please select a MIDI file.';
+        return;
+      }
+      if (!midi2abcReady || !midi2abc || !midi2abc.FS) {
+        output.textContent = 'WASM module is still loading. Please wait...';
+        // Optionally, re-try after a short delay
+        setTimeout(() => uploadMidiFile(target), 200);
+        return;
+      }
+      const file = target.files[0];
+      convertMidi(file, output);
+    }
+
+    function convertMidi(file, output) {
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const data = new Uint8Array(e.target.result);
+        abcOutput = "";// Ensure the file system is clean
+        try {
+            midi2abc.FS.unlink('/input.mid');
+        } catch (e) {
+            // File doesn't exist, that's fine
+        }
+        
+        // Write MIDI data to WASM filesystem
+        midi2abc.FS.writeFile('/input.mid', data);
+        
+        // Verify file was written correctly
+        const writtenData = midi2abc.FS.readFile('/input.mid');
+        try {
+          midi2abc.callMain(['input.mid']);
+          // Remove everything before the first X: (inclusive of newlines)
+          abcOutput = abcOutput.replace(/^[\s\S]*?(?=^X:)/m, '');
+          output.value = abcOutput;
+          // Enable the Render ABC Score button and render the score
+          document.getElementById('scoreBtn').disabled = false;
+          renderAbcScore();
+        } catch (err) {
+          output.value = '';
+          output.textContent = 'Error: ' + err;
+          const scoreDiv = document.getElementById('score');
+          scoreDiv.innerHTML = '<em>Error converting midi File.</em>';
+          console.error(err);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    }
+
+    // WASM load error handling
+    window.addEventListener('error', function(e) {
+      if (e.message && e.message.includes('wasm')) {
+        document.getElementById('output').textContent = 'Error loading WASM. Check your server and browser console.';
+      }
+    });
+  </script>
+</body>
+</html>
