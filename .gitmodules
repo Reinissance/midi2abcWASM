@@ -1,0 +1,8 @@
+[submodule "abcmidi"]
+	path = abcmidi
+	url = https://github.com/Reinissance/abcmidi.git
+	branch = WASMable
+[submodule "abcmidi"]
+	path = abcmidi
+	url = https://github.com/Reinissance/abcmidi.git
+	branch = WASMable
